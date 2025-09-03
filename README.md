@@ -1,3 +1,7 @@
+# Not Larch
+
+This is not Larch. Do not use this. I am modifying it for my needs. 
+
 # Larch
 
 This repository contains the Larch package, for estimating and applying discrete

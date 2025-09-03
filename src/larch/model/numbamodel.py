@@ -214,7 +214,6 @@ def utility_from_data_ca(
             else:
                 utility_elem[j] = -np.inf
 
-
 def _type_signature(sig, precision=32):
     result = ()
     for s in sig:
@@ -857,6 +856,215 @@ def model_q_ca_slots(data_provider: Dataset, model: _BaseModel, dtype=np.float64
         model_q_scale_param,
     )
 
+def wasserstein_2(x, y, m=1000):
+    """
+    Compute 1D quadratic Wasserstein distance (W2) between two empirical distributions.
+    
+    Parameters
+    ----------
+    x, y : array-like
+        Samples from the two distributions.
+    m : int, optional
+        Number of quantile grid points to approximate the integral. Higher is more accurate.
+        
+    Returns
+    -------
+    float
+        Quadratic Wasserstein distance W2(x, y).
+    """
+    qs = (np.arange(1, m+1) - 0.5) / m
+    qx = np.quantile(x, qs)
+    qy = np.quantile(y, qs)
+    # return -1 * np.sqrt(np.mean((qx - qy) ** 2))
+    return -1 * wasserstein_distance(x, y)
+
+class W2LogitNumpy:
+    """
+    Multinomial logit with W2-style loss.
+    v_ij = beta_time * TT_od[o_i, j] + size_j @ beta_size + (ASC_j optional)
+    p_ij = softmax(v_i)_j
+    Loss per trip i (global C):     sum_k C[y_i, k] * p_ik
+    Loss per trip i (surrogate Ci): sum_k Ci[y_i, k] * p_ik, with Ci from TT_od row
+    """
+    def __init__(self, J: int, F: int, use_asc: bool = False, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        self.beta_time = np.zeros((), dtype=np.float32)
+        self.beta_size = rng.normal(0, 1e-3, size=(F,)).astype(np.float32)
+        self.use_asc = use_asc
+        self.asc = rng.normal(0, 1e-3, size=(J,)).astype(np.float32) if use_asc else None
+
+    def _utilities(self, time_rows: np.ndarray, size_j: np.ndarray) -> np.ndarray:
+        """
+        time_rows: (B,J) OD times for batch origins
+        size_j:   (J,F) destination features
+        """
+        base = size_j @ self.beta_size  # (J,)
+        if self.use_asc:
+            base = base + self.asc
+        v = self.beta_time * time_rows + base[None, :]
+        return v
+
+    @staticmethod
+    @njit(fastmath=True)
+    def _softmax(v: np.ndarray) -> np.ndarray:
+        # stable softmax row-wise
+        out = np.empty_like(v)
+        for i in range(v.shape[0]):
+            m = np.max(v[i])
+            ex = np.exp(v[i] - m)
+            out[i] = ex / np.sum(ex)
+        return out
+
+    def predict_proba(self, TT_od_rows: np.ndarray, size_j: np.ndarray, batch: int = 4096) -> np.ndarray:
+        """
+        TT_od_rows: (N,J) OD times for the specific origins you care about
+        """
+        N, J = TT_od_rows.shape
+        out = np.empty((N, J), dtype=np.float32)
+        for s in range(0, N, batch):
+            e = min(s + batch, N)
+            v = self._utilities(TT_od_rows[s:e], size_j)
+            out[s:e] = self._softmax(v.astype(np.float64)).astype(np.float32)
+        return out
+
+class Adam:
+    def __init__(self, params: tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
+                 lr=2e-2, b1=0.9, b2=0.999, eps=1e-8, weight_decay=1e-5):
+        self.lr, self.b1, self.b2, self.eps = lr, b1, b2, eps
+        self.wd = weight_decay
+        self.t = 0
+        self.m = [np.zeros_like(p) if p is not None else None for p in params]
+        self.v = [np.zeros_like(p) if p is not None else None for p in params]
+
+    def step(self, params, grads):
+        self.t += 1
+        out = []
+        for i, (p, g) in enumerate(zip(params, grads)):
+            if p is None: 
+                out.append(None); continue
+            g = g + self.wd * p
+            self.m[i] = self.b1 * self.m[i] + (1 - self.b1) * g
+            self.v[i] = self.b2 * self.v[i] + (1 - self.b2) * (g * g)
+            mhat = self.m[i] / (1 - self.b1 ** self.t)
+            vhat = self.v[i] / (1 - self.b2 ** self.t)
+            p -= self.lr * mhat / (np.sqrt(vhat) + self.eps)
+            out.append(p)
+        return out
+
+def make_c_from_skim(mtx: np.ndarray, scale: float | None = None) -> np.ndarray:
+    """
+    mtx : skim
+        Skim input
+    scale : float, optional
+        scale factor for normalization (if None, then scales by median)
+    
+    Returns
+    -------
+    ndarray
+        adjusted matrix for use in Quadratic Wasserstein Distance function
+    """
+    m = mtx.astype(np.float32).copy()
+    finite = np.isfinite(m)
+    if not finite.all():
+        replace = np.nanpercentile(m[finite], 99.0).astype(np.float32)
+    C = m ** 2
+    np.fill_diagonal(C, 0.0)
+    if scale is None:
+        p = C[C > 0]
+        s = np.median(p) if p.size else 1.0
+    else:
+        s = float(scale)
+    C = (C / (s + 1e-12)).astype(np.float32)
+    return C
+
+def fit_w2_logit_numpy(
+    mtx: np.ndarray,         # (O,J) origin–destination travel times
+    size_j: np.ndarray,        # (J,F) destination features
+    origins: np.ndarray,       # (N,) origin indices (0..O-1)
+    y: np.ndarray,             # (N,) chosen destination indices (0..J-1)
+    weights: Optional[np.ndarray] = None,   # (N,) survey expansion weights # pyright: ignore[reportUndefinedVariable]
+    C: Optional[np.ndarray] = None,         # (J,J) global cost # pyright: ignore[reportUndefinedVariable]
+    use_asc: bool = False,
+    epochs: int = 20,
+    batch_size: int = 2048,
+    lr: float = 2e-2,
+    weight_decay: float = 1e-5,
+    seed: int = 0,
+):
+    """
+    Returns model and training history.
+    """
+    mtx = mtx.astype(np.float32)
+    size_j = size_j.astype(np.float32)
+    origins = origins.astype(np.int64)
+    y = y.astype(np.int64)
+    if weights is None:
+        weights = np.ones_like(y, dtype=np.float32)
+    else:
+        weights = weights.astype(np.float32)
+
+    O, J = mtx.shape
+    F = size_j.shape[1]
+    model = W2LogitNumpy(J, F, use_asc=use_asc, seed=seed)
+
+    rng = np.random.default_rng(seed)
+    idx = np.arange(y.size)
+    hist = []
+
+    C = C.astype(np.float32)
+
+    opt = Adam((model.beta_time, model.beta_size, model.asc), lr=lr, weight_decay=weight_decay)
+
+    for ep in range(1, epochs + 1):
+        rng.shuffle(idx)
+        total_loss = 0.0
+        total_w = 0.0
+
+        for s in range(0, idx.size, batch_size):
+            batch_idx = idx[s:s + batch_size]
+            o_b = origins[batch_idx]
+            y_b = y[batch_idx]
+            w_b = weights[batch_idx].astype(np.float32)
+
+            time_rows = mtx[o_b, :]               # (B,J)
+            v = model._utilities(time_rows, size_j) # (B,J)
+            p = model._softmax(v.astype(np.float64)).astype(np.float32)  # (B,J)
+
+            # ----- Build row costs -----
+            rowC = C[y_b, :]                    # (B,J)
+
+            # ----- Loss (weighted mean) -----
+            exp_cost = np.sum(rowC * p, axis=1)    # (B,)
+            loss_b = np.sum(w_b * exp_cost) / (np.sum(w_b) + 1e-12)
+            total_loss += float(loss_b) * float(np.sum(w_b))
+            total_w += float(np.sum(w_b))
+
+            # ----- Gradients wrt v -----
+            # dL/dv_ij = p_ij * ( rowC_ij - E_p[rowC_i·] )
+            grad_v = p * (rowC - exp_cost[:, None])  # (B,J), weighted next
+            # Apply weights
+            grad_v *= (w_b[:, None] / (np.sum(w_b) + 1e-12)).astype(np.float32)
+
+            # ----- Parameter gradients -----
+            # beta_time: sum_ij grad_v_ij * time_ij
+            g_beta_time = np.sum(grad_v * time_rows)
+
+            # beta_size_f: sum_ij grad_v_ij * size_jf  => size.T @ sum_i grad_v_i·
+            G_j = np.sum(grad_v, axis=0)                    # (J,)
+            g_beta_size = size_j.T @ G_j                     # (F,)
+
+            # asc_j: sum_i grad_v_ij
+            g_asc = G_j if model.use_asc else None
+
+            # ----- Optimizer step -----
+            params = [model.beta_time, model.beta_size, model.asc]
+            grads  = [g_beta_time,  g_beta_size,  g_asc]
+            opt.step(params, grads)
+
+        hist.append(total_loss / max(total_w, 1.0))
+        print(f"Epoch {ep:02d} | W2-style loss: {hist[-1]:.6f}")
+
+    return model, {"loss": hist, "surrogate_scale": (None if C is not None else float(sC))}
 
 class _case_slice:
     def __get__(self, obj, objtype=None):
@@ -1381,7 +1589,7 @@ class NumbaModel(_BaseModel):
         x=None,
         only_utility=0,
         return_gradient=False,
-        return_probability=False,
+        return_probability=True,
         return_bhhh=False,
         start_case=None,
         stop_case=None,
@@ -1470,6 +1678,51 @@ class NumbaModel(_BaseModel):
                 )
             raise
         return result_arrays, penalty
+
+    def _wasserstein_runner(
+         self,
+        x=None,
+        only_utility=0,
+        return_gradient=False,
+        return_probability=False,
+        return_bhhh=False,
+        start_case=None,
+        stop_case=None,
+        step_case=None,   
+    ):
+        caseslice = slice(start_case, stop_case, step_case)
+        args = self.__prepare_for_compute(
+            x,
+            allow_missing_ch=return_probability or (only_utility > 0),
+            caseslice=caseslice,
+        )
+        args_flags = args + (
+            np.asarray(
+                [
+                    only_utility,
+                    return_probability,
+                    return_gradient,
+                    return_bhhh,
+                ],
+                dtype=np.int8,
+            ),
+        )
+        try:
+            result_arrays = WorkArrays(
+                *_numba_master_vectorized(
+                    *args_flags,
+                    out=tuple(self.work_arrays.cs[caseslice]),
+                    )
+            )
+        except ValueError:
+            result_arrays = WorkArrays(
+                *_numba_master_vectorized(
+                    *args_flags,
+                    # out=tuple(self.work_arrays.cs[caseslice]),
+                )
+            )
+        return result_arrays, None #wasserstein_2(obs_dist, mod_dist)
+        
 
     @property
     def weight_normalization(self):
@@ -1591,6 +1844,39 @@ class NumbaModel(_BaseModel):
         if return_series:
             result = pd.Series(result, index=self.pnames)
         return result
+    
+    def d_wasserstein(
+        self,
+        x=None,
+        *,
+        start_case=None,
+        stop_case=None,
+        step_case=None,
+        return_series=False,
+        **kwargs,
+    ):
+        if self._use_streaming:
+            result = (
+                self.streaming.d_wasserstein(
+                    x, start_case=start_case, stop_case=stop_case, step_case=step_case
+                )
+                * self.weight_normalization
+            )
+        else:
+            result_arrays, penalty = self._wasserstein_runner(
+                x,
+                start_case=start_case,
+                stop_case=stop_case,
+                step_case=step_case,
+                return_gradient=True,
+            )
+            #result = result_arrays.d_loglike.sum(0) * self.weight_normalization
+        if return_series:
+            result = pd.Series(result, index=self.pnames)
+        obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
+        mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
+        result = wasserstein_2(obs_dist, mod_dist)
+        return result
 
     def loglike_casewise(
         self,
@@ -1679,6 +1965,72 @@ class NumbaModel(_BaseModel):
         )
         return result_arrays.d_loglike * self.weight_normalization
 
+    def wasserstein(
+        self,
+        x=None,
+        *,
+        start_case: int | None = None,
+        stop_case: int | None = None,
+        step_case: int | None = None,
+        check_if_best: bool = True,
+        error_if_bad: bool = True,
+        **kwargs,
+    ):
+        """
+        Compute the log likelihood of the model.
+
+        Parameters
+        ----------
+        x : array-like or dict, optional
+            New values to set for the parameters before evaluating
+            the log likelihood.  If given as array-like, the array must
+            be a vector with length equal to the length of the
+            parameter frame, and the given vector will replace
+            the current values.  If given as a dictionary,
+            the dictionary is used to update the parameters.
+        start_case : int, default 0
+            The first case to include in the log likelihood computation.
+            To include all cases, start from 0 (the default).
+        stop_case : int, default -1
+            One past the last case to include in the log likelihood
+            computation.  This is processed as usual for Python slicing
+            and iterating, and negative values count backward from the
+            end.  To include all cases, end at -1 (the default).
+        step_case : int, default 1
+            The step size of the case iterator to use in likelihood
+            calculation.  This is processed as usual for Python slicing
+            and iterating.  To include all cases, step by 1 (the default).
+        check_if_best : bool, default True
+            If True, check if the current log likelihood is the best
+            found so far, and if so, update the cached best log likelihood
+            and cached best parameters.
+        error_if_bad : bool, default True
+            If True, raise an exception if the log likelihood is NaN or Inf.
+
+        Returns
+        -------
+        float
+        """
+        print(f"x = {x}")
+        np.save(rf"C:\models\Reno_dc2\DC_update\params{self.serial_number}.npy", x)
+        result_arrays, penalty = self._loglike_runner(
+                x, start_case=start_case, stop_case=stop_case, step_case=step_case
+            )
+        # result = result_arrays.loglike.sum() * self.weight_normalization
+            
+        # obs_dist = self.choice_avail_summary()['chosen'][0:self.datatree.n_alts] / self.choice_avail_summary()['chosen'][0:self.datatree.n_alts].sum()
+        obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
+        mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
+        np.save(rf"C:\models\Reno_dc2\DC_update\obs_dist{self.serial_number}.npy", obs_dist)
+        np.save(rf"C:\models\Reno_dc2\DC_update\mod_dist{self.serial_number}.npy", mod_dist)
+        self.serial_number += 1
+        result = wasserstein_2(obs_dist, mod_dist)
+        print(f"Result: {result}")
+        if start_case is None and stop_case is None and step_case is None:
+            self._check_if_best(result)
+
+        return result
+    
     def bhhh(
         self,
         x=None,
@@ -2437,6 +2789,41 @@ class NumbaModel(_BaseModel):
                 graph,
                 self.availability_co_vars,
             )
+
+    def minimize_wasserstein(
+        self,
+        *args,
+        **kwargs,
+    ) -> dictx:
+        """
+        Minimize the Wasserstein Distance by way of maximizing the inverse of the wasserstein distance.
+
+        Parameters
+        ----------
+        method : str, optional
+            The optimization method to use.  See scipy.optimize for
+            most possibilities, or use 'BHHH'. Defaults to SLSQP if
+            there are any constraints or finite parameter bounds,
+            otherwise defaults to BHHH.
+        quiet : bool, default False
+            Whether to suppress the dashboard.
+        options : dict, optional
+            These options are passed through to the `scipy.optimize.minimize`
+            function.
+        maxiter : int, optional
+            Maximum number of iterations.  This argument is just added to
+            `options` for most methods.
+
+        Returns
+        -------
+        larch.util.dictx
+            A dictionary of results, including final log likelihood,
+            elapsed time, and other statistics.  The exact items
+            included in output will vary by estimation method.
+
+        """
+        from .optimization import minimize_wasserstein
+        return minimize_wasserstein(self, *args, **kwargs)
 
     def maximize_loglike(
         self,

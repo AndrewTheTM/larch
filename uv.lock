@@ -611,7 +611,7 @@ name = "importlib-metadata"
 version = "8.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp" },
+    { name = "zipp", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/66/650a33bd90f786193e4de4b3ad86ea60b53c89b669a5c7be931fac31cdb0/importlib_metadata-8.7.0.tar.gz", hash = "sha256:d13b81ad223b890aa16c5471f2ac3056cf76c5f10f82d6f9292f0b415f389000", size = 56641, upload-time = "2025-04-27T15:29:01.736Z" }
 wheels = [
@@ -970,15 +970,9 @@ test = [
     { name = "tables", version = "3.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tabulate" },
     { name = "vl-convert-python" },
-    { name = "xlogit" },
     { name = "xlsxwriter" },
     { name = "zarr", version = "2.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "zarr", version = "3.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ipykernel" },
 ]
 
 [package.metadata]
@@ -1011,15 +1005,11 @@ requires-dist = [
     { name = "tabulate", marker = "extra == 'test'" },
     { name = "vl-convert-python", marker = "extra == 'test'" },
     { name = "xarray" },
-    { name = "xlogit", marker = "extra == 'test'" },
     { name = "xlsxwriter", marker = "extra == 'test'" },
     { name = "xmle", specifier = ">=0.1.25" },
     { name = "zarr", marker = "extra == 'test'" },
 ]
 provides-extras = ["test", "jax"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "ipykernel", specifier = ">=6.29.5" }]
 
 [[package]]
 name = "llvmlite"
@@ -2760,19 +2750,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9b/29/37761364e137db13898cf5a790574dd7883f7355d5dfb42b66ee7a9a6318/xarray-2025.4.0.tar.gz", hash = "sha256:2a89cd6a1dfd589aa90ac45f4e483246f31fc641836db45dd2790bb78bd333dc", size = 2974151, upload-time = "2025-04-29T23:27:59.238Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/1e/96fd96419fec1a37da998a1ca3d558f2cae2f6f3cd5015170371b05a2b6b/xarray-2025.4.0-py3-none-any.whl", hash = "sha256:b27defd082c5cb85d32c695708de6bb05c2838fb7caaf3f952982e602a35b9b8", size = 1290171, upload-time = "2025-04-29T23:27:57.059Z" },
-]
-
-[[package]]
-name = "xlogit"
-version = "0.2.7"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "scipy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/52/ce/c2d15e5b5a98334b1d5093c24698a2a747d623a053c84d33d844d6b67491/xlogit-0.2.7.tar.gz", hash = "sha256:60b3a657082cfe0b5b5a1ce1c49496da07ad14f51b2a4b6cda3e6089d5371608", size = 39423, upload-time = "2023-07-25T13:56:00.465Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/ab/5280d6920d59e739063effb59b54349a71ee66bdd11daa1664d08e68564a/xlogit-0.2.7-py3-none-any.whl", hash = "sha256:7b091b5bb1e0b806892eccbc2b0f9b8b876bb80fcd994446faec80ac000fbc3f", size = 36036, upload-time = "2023-07-25T13:55:58.655Z" },
 ]
 
 [[package]]

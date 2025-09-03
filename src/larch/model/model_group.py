@@ -236,6 +236,44 @@ class ModelGroup(ConstrainedModel, MutableSequence):
         """
         return sum([model.loglike_null(use_cache) for model in self._submodels])
 
+    def wasserstein(
+        self, x: ArrayLike | dict | None = None, *, check_if_best=True, **kwargs
+    ) -> float:
+        """
+        Compute the log likelihood of the group of models.
+
+        Note that unlike for a single model, the log likelihood cannot
+        be computed for a slice of cases, but must be computed for all
+        cases.
+
+        Parameters
+        ----------
+        x : array-like or dict, optional
+            New values to set for the parameters before evaluating
+            the log likelihood.  If given as array-like, the array must
+            be a vector with length equal to the length of the
+            parameter frame, and the given vector will replace
+            the current values.  If given as a dictionary,
+            the dictionary is used to update the parameters.
+        check_if_best : bool, default True
+            If True, check if the current log likelihood is the best
+            found so far, and if so, update the cached best log likelihood
+            and cached best parameters.
+
+        Returns
+        -------
+        float
+        """
+        result = sum(
+            [
+                model.wasserstein(x=x, check_if_best=False, **kwargs)
+                for model in self._submodels
+            ]
+        )
+        if check_if_best:
+            self._check_if_best(result)
+        return result
+
     def bhhh(
         self,
         x=None,
