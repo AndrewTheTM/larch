@@ -737,7 +737,7 @@ def maximize_loglike(
 
                 # args = getattr(model, "_null_slice", (0, -1, 1))
                 raw_result = minimize(
-                    model.logloss,
+                    model.wasserstein,
                     model.pvals,
                     # args=args,
                     method=method,

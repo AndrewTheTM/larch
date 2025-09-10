@@ -1,2 +1,2 @@
-cd C:\models\larch_git\src
-python -m larch
+cd C:\models\larch_git\
+pip install -e .

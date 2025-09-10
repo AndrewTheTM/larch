@@ -856,7 +856,7 @@ def model_q_ca_slots(data_provider: Dataset, model: _BaseModel, dtype=np.float64
         model_q_scale_param,
     )
 
-def wasserstein_2(x, y, m=1000):
+def wasserstein_2(x, y, m=10000):
     """
     Compute 1D quadratic Wasserstein distance (W2) between two empirical distributions.
     
@@ -875,8 +875,8 @@ def wasserstein_2(x, y, m=1000):
     qs = (np.arange(1, m+1) - 0.5) / m
     qx = np.quantile(x, qs)
     qy = np.quantile(y, qs)
-    # return -1 * np.sqrt(np.mean((qx - qy) ** 2))
-    return -1 * wasserstein_distance(x, y)
+    return 1 / np.sqrt(np.mean((qx - qy) ** 2))
+    
 
 class W2LogitNumpy:
     """
@@ -1721,7 +1721,7 @@ class NumbaModel(_BaseModel):
                     # out=tuple(self.work_arrays.cs[caseslice]),
                 )
             )
-        return result_arrays, None #wasserstein_2(obs_dist, mod_dist)
+        return result_arrays, 0.0 #wasserstein_2(obs_dist, mod_dist)
         
 
     @property
@@ -1870,12 +1870,12 @@ class NumbaModel(_BaseModel):
                 step_case=step_case,
                 return_gradient=True,
             )
-            #result = result_arrays.d_loglike.sum(0) * self.weight_normalization
+            result = result_arrays.d_loglike.sum(0) * self.weight_normalization
         if return_series:
             result = pd.Series(result, index=self.pnames)
-        obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
-        mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
-        result = wasserstein_2(obs_dist, mod_dist)
+        # obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
+        # mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
+        # result = wasserstein_2(obs_dist, mod_dist)
         return result
 
     def loglike_casewise(
@@ -2011,21 +2011,36 @@ class NumbaModel(_BaseModel):
         -------
         float
         """
-        print(f"x = {x}")
-        np.save(rf"C:\models\Reno_dc2\DC_update\params{self.serial_number}.npy", x)
+
         result_arrays, penalty = self._loglike_runner(
                 x, start_case=start_case, stop_case=stop_case, step_case=step_case
             )
         # result = result_arrays.loglike.sum() * self.weight_normalization
+
+        def monte_carlo_sim(p: np.array) -> int:
+            r = np.random.random()
+            j = 0
+            cprob = p[j]
+            while j < p.shape[0] and cprob < r:
+                j+=1
+                cprob += p[j]
+            return j
+        
             
         # obs_dist = self.choice_avail_summary()['chosen'][0:self.datatree.n_alts] / self.choice_avail_summary()['chosen'][0:self.datatree.n_alts].sum()
         obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
-        mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
-        np.save(rf"C:\models\Reno_dc2\DC_update\obs_dist{self.serial_number}.npy", obs_dist)
-        np.save(rf"C:\models\Reno_dc2\DC_update\mod_dist{self.serial_number}.npy", mod_dist)
-        self.serial_number += 1
-        result = wasserstein_2(obs_dist, mod_dist)
-        print(f"Result: {result}")
+        model_probs = result_arrays.probability[:,0:self.datatree.n_alts]
+        # predicted_dest = np.apply_along_axis(monte_carlo_sim, axis=1, arr=model_probs) 
+
+        # mod_dist = np.array(pd.DataFrame({'dest': np.arange(0, 1164)}).merge(pd.DataFrame(predicted_dest).groupby(0).agg(n = (0, 'count')), left_on = 'dest', right_index = True, how = 'left').fillna(0)['n']).astype(np.float64)
+        # try:
+        #     mod_dist /= mod_dist.sum()
+        # except:
+        #     print("There was an error in mod_dist... dumping the array to c:\\models\\check_array.npy ...")
+        #     np.save(r"c:\models\check_array.npy", result_arrays.probability)
+        # mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
+        result = wasserstein_2(obs_dist, model_probs)
+        # print(f"Result: {result}")
         if start_case is None and stop_case is None and step_case is None:
             self._check_if_best(result)
 
@@ -2489,6 +2504,13 @@ class NumbaModel(_BaseModel):
 
     def d_logloss(self, x=None, start_case=0, stop_case=-1, step_case=1, **kwargs):
         result = self.d_loglike(
+            x, start_case=start_case, stop_case=stop_case, step_case=step_case, **kwargs
+        )
+        print(result)
+        return -np.asarray(result) / self.total_weight()
+    
+    def d_logloss_wd(self, x=None, start_case=0, stop_case=-1, step_case=1, **kwargs):
+        result = self.d_wasserstein(
             x, start_case=start_case, stop_case=stop_case, step_case=step_case, **kwargs
         )
         return -np.asarray(result) / self.total_weight()
