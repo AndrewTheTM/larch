@@ -354,11 +354,11 @@ def minimize_wasserstein(
 
                 # args = getattr(model, "_null_slice", (0, -1, 1))
                 raw_result = minimize(
-                    model.wasserstein,
+                    model.loglike,
                     model.pvals,
                     # args=args,
                     method=method,
-                    jac=model.d_wasserstein,
+                    jac=model.d_loglike,
                     bounds=bounds,
                     callback=callback,
                     options=options,
@@ -737,7 +737,7 @@ def maximize_loglike(
 
                 # args = getattr(model, "_null_slice", (0, -1, 1))
                 raw_result = minimize(
-                    model.wasserstein,
+                    model.loglike,
                     model.pvals,
                     # args=args,
                     method=method,

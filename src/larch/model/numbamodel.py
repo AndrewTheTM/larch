@@ -17,6 +17,8 @@ from numba import int8 as i8
 from numba import int32 as i32
 from numba import int64 as i64
 
+from scipy import stats
+
 from ..dataset import DataArray, Dataset, DataTree
 from ..exceptions import MissingDataError
 from ..model.possible_overspec import (
@@ -370,7 +372,7 @@ def _numba_utility_to_loglike(
         else:
             logprob[dn] = (utility[dn] - utility[up]) / mu_up
         if array_ch[dn]:
-            loglike[0] += logprob[dn] * array_ch[dn] * array_wt[0]
+            loglike[0] += logprob[dn] * array_ch[dn] * array_wt[0] #FIXME: ASR make this exp(logprob[dn]) * d[dn]?^2
 
     if return_probability or return_grad or return_bhhh:
         # logprob becomes conditional_probability
@@ -465,13 +467,13 @@ def _numba_utility_to_loglike(
 
             if return_bhhh:
                 bhhh[:] = 0.0
-
+            #FIXME: ASR needs to take the derivative of the wd
             # d loglike
             for a in range(n_alts):
                 this_ch = array_ch[a]
-                if this_ch == 0:
+                if this_ch == 0: #FIXME: ASR not correct for wd
                     continue
-                total_probability_a = probability[a]
+                total_probability_a = probability[a] / 2.0
                 # if total_probability_a > 0:
                 #     tempvalue = d_probability[a, :] / total_probability_a
                 #     if return_bhhh:
@@ -481,7 +483,7 @@ def _numba_utility_to_loglike(
                 if total_probability_a > 0:
                     if total_probability_a < 1e-250:
                         total_probability_a = 1e-250
-                    tempvalue = d_probability[a, :] * (this_ch / total_probability_a)
+                    tempvalue = d_probability[a, :] * (this_ch / total_probability_a) #FIXME: distance / total_probability
                     dLL_temp = tempvalue / this_ch
                     d_loglike += tempvalue * array_wt[0]
                     if return_bhhh:
@@ -872,10 +874,13 @@ def wasserstein_2(x, y, m=10000):
     float
         Quadratic Wasserstein distance W2(x, y).
     """
-    qs = (np.arange(1, m+1) - 0.5) / m
-    qx = np.quantile(x, qs)
-    qy = np.quantile(y, qs)
-    return 1 / np.sqrt(np.mean((qx - qy) ** 2))
+    # qs = (np.arange(1, m+1) - 0.5) / m
+    # qx = np.quantile(x, qs)
+    # qy = np.quantile(y, qs)
+    # return 1 / np.sqrt(np.mean((qx - qy) ** 2))
+    # return 1 / stats.wasserstein_distance(x, y)
+    # On the above, this results in some very bad parameter estimates.
+    return 1.0 / stats.wasserstein_distance_nd(x, y)
     
 
 class W2LogitNumpy:
@@ -2029,17 +2034,25 @@ class NumbaModel(_BaseModel):
             
         # obs_dist = self.choice_avail_summary()['chosen'][0:self.datatree.n_alts] / self.choice_avail_summary()['chosen'][0:self.datatree.n_alts].sum()
         obs_dist = np.asarray(self.dataset["ch"].copy()).sum(0) / np.asarray(self.dataset["ch"].copy()).sum()
+        #FIXME: The wasserstein distance produced by ChatGPT is WRONG.
+        #
+        # keep model_probs and predicted_dest? Or use model_probs?
+        # This needs to apply against a matrix - so think ll but use the distance between 
+        # the distributions as a part of this... check the pyot (Python Optimal Transport)
+        # code for the actual way to do this.
         model_probs = result_arrays.probability[:,0:self.datatree.n_alts]
-        # predicted_dest = np.apply_along_axis(monte_carlo_sim, axis=1, arr=model_probs) 
+        predicted_dest = np.apply_along_axis(monte_carlo_sim, axis=1, arr=model_probs) 
 
-        # mod_dist = np.array(pd.DataFrame({'dest': np.arange(0, 1164)}).merge(pd.DataFrame(predicted_dest).groupby(0).agg(n = (0, 'count')), left_on = 'dest', right_index = True, how = 'left').fillna(0)['n']).astype(np.float64)
-        # try:
-        #     mod_dist /= mod_dist.sum()
-        # except:
-        #     print("There was an error in mod_dist... dumping the array to c:\\models\\check_array.npy ...")
-        #     np.save(r"c:\models\check_array.npy", result_arrays.probability)
-        # mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
-        result = wasserstein_2(obs_dist, model_probs)
+        mod_dist = np.array(pd.DataFrame({'dest': np.arange(0, 1164)}).merge(pd.DataFrame(predicted_dest).groupby(0).agg(n = (0, 'count')), left_on = 'dest', right_index = True, how = 'left').fillna(0)['n']).astype(np.float64)
+        try:
+            mod_dist /= mod_dist.sum()
+        except:
+            print("There was an error in mod_dist... dumping the array to c:\\models\\check_array.npy ...")
+            np.save(r"c:\models\check_array.npy", result_arrays.probability)
+        mod_dist = result_arrays.probability[:,0:self.datatree.n_alts].sum(0) / result_arrays.probability[:,0:self.datatree.n_alts].sum(0).sum()
+        # result = wasserstein_2(obs_dist, mod_dist, m=self.datatree.n_alts)
+        result = wasserstein_2(self.dataset["ch"], result_arrays.probability[:,0:self.datatree.n_alts])
+        # result = 1.0 / stats.wasserstein_distance_nd(self.dataset["ch"], result_arrays.probability[:,0:self.datatree.n_alts])
         # print(f"Result: {result}")
         if start_case is None and stop_case is None and step_case is None:
             self._check_if_best(result)
