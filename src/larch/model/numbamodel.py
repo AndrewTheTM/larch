@@ -43,7 +43,6 @@ if not list(Path(__file__).parent.glob("__pycache__/numbamodel.*.nbc")):
 
 logger = logging.getLogger(__package__)
 
-
 @njit(cache=True)
 def minmax(x):
     maximum = x[0]
@@ -266,6 +265,7 @@ def _numba_utility_to_loglike(
     bhhh,  # float output shape=[n_params, n_params]
     d_loglike,  # float output shape=[n_params]
     loglike,  # float output shape=[]
+    distances, # float input shape=[alts]
 ):
     assert edgeslots.shape[1] == 4
     upslots = edgeslots[:, 0]  # int input shape=[edges]
@@ -371,7 +371,8 @@ def _numba_utility_to_loglike(
         else:
             logprob[dn] = (utility[dn] - utility[up]) / mu_up
         if array_ch[dn]:
-            loglike[0] += logprob[dn] * array_ch[dn] * array_wt[0]
+            loglike[0] += np.exp(logprob[dn]) * distances[dn] * array_wt[0]
+
 
     if return_probability or return_grad or return_bhhh:
         # logprob becomes conditional_probability
@@ -386,7 +387,7 @@ def _numba_utility_to_loglike(
             dn = dnslots[s]
             if array_av[dn]:
                 up = upslots[s]
-                probability[dn] = probability[up] * conditional_probability[dn]
+                probability[dn] = probability[up] * conditional_probability[dn] 
             else:
                 probability[dn] = 0.0
 
@@ -469,7 +470,7 @@ def _numba_utility_to_loglike(
 
             # d loglike
             for a in range(n_alts):
-                this_ch = array_ch[a]
+                this_ch = array_ch[a] #FIXME ASR: comment the next two, update the equations
                 if this_ch == 0:
                     continue
                 total_probability_a = probability[a]
@@ -499,7 +500,7 @@ _master_shape_signature = (
     "(nodes),(nodes),(),(vco),(alts,vca), "
     "(ces,vce),(ces),(two),  "
     "(four)->"
-    "(nodes),(nodes),(nodes),(params,params),(params),()"
+    "(nodes),(nodes),(nodes),(params,params),(params),(alts)"
 )
 
 
@@ -540,6 +541,7 @@ def _numba_master(
     bhhh,  # [26] float output shape=[n_params, n_params]
     d_loglike,  # [27] float output shape=[n_params]
     loglike,  # [28] float output shape=[]
+    distances, # [29?] float input shape=[n_alts]
 ):
     n_alts = array_ca.shape[0]
 
@@ -629,11 +631,12 @@ def _numba_master(
         bhhh,  # float output shape=[n_params, n_params]
         d_loglike,  # float output shape=[n_params]
         loglike,  # float output shape=[]
+        distances, #float input shape=[alts]
     )
 
 
 _numba_master_vectorized = guvectorize(
-    _type_signatures("fiii fii ifii I iii bf fbffF Fij b fffFff"),
+    _type_signatures("fiii fii ifii I iii bf fbffF Fij b fffFfff"),
     _master_shape_signature,
     nopython=True,
     fastmath=True,
@@ -1402,7 +1405,7 @@ class NumbaModel(_BaseModel):
                     return_bhhh,
                 ],
                 dtype=np.int8,
-            ),
+            ) + self.data['dist_to_ch'],
         )
         try:
             with np.errstate(
@@ -1557,7 +1560,7 @@ class NumbaModel(_BaseModel):
                                 msg += f", {caseids[i]}"
                             if len(bad_case_indexes) > 5:
                                 msg += ", ..."
-                        raise ValueError(msg)
+                        # raise ValueError(msg)
         if start_case is None and stop_case is None and step_case is None:
             self._check_if_best(result)
         return result

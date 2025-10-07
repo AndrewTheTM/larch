@@ -1308,3 +1308,4 @@ class Model(NumbaModel, OptimizeMixin, PanelMixin):
             result.close()
         else:
             return result
+        
