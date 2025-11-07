@@ -10,7 +10,7 @@ import pandas as pd
 from ..util import dictx
 from .basemodel import BaseModel
 from .constrainedmodel import ConstrainedModel
-from .numbamodel import _arr_inflate, _safe_sqrt, set_distance_matrix
+from .numbamodel import _arr_inflate, _safe_sqrt
 from .possible_overspec import (
     PossibleOverspecification,
     compute_possible_overspecification,

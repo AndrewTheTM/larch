@@ -259,13 +259,13 @@ def _numba_utility_to_loglike(
     array_wt,  # float input shape=[]
     return_flags,  #
     dutility,  #
+    distances, # float input shape=[alts]
     utility,  # float output shape=[nodes]
     logprob,  # float output shape=[nodes]
     probability,  # float output shape=[nodes]
     bhhh,  # float output shape=[n_params, n_params]
     d_loglike,  # float output shape=[n_params]
     loglike,  # float output shape=[]
-    distances, # float input shape=[alts]
 ):
     assert edgeslots.shape[1] == 4
     upslots = edgeslots[:, 0]  # int input shape=[edges]
@@ -358,6 +358,8 @@ def _numba_utility_to_loglike(
 
     if only_utility == 2:
         return
+    
+    
 
     for s in range(upslots.size):
         dn = dnslots[s]
@@ -370,9 +372,9 @@ def _numba_utility_to_loglike(
             logprob[dn] = -np.inf
         else:
             logprob[dn] = (utility[dn] - utility[up]) / mu_up
-        if array_ch[dn]:
-            loglike[0] += np.exp(logprob[dn]) * distances[dn] * array_wt[0]
-
+        # if array_ch[dn]:
+        loglike[0] += -1 * (np.exp(logprob[dn]) * (distances[dn] ** 2.0) * array_wt[0]) #* array_ch[dn]
+        # So loglike[0] is -1 * the quadratic wasserstein distance
 
     if return_probability or return_grad or return_bhhh:
         # logprob becomes conditional_probability
@@ -390,7 +392,6 @@ def _numba_utility_to_loglike(
                 probability[dn] = probability[up] * conditional_probability[dn] 
             else:
                 probability[dn] = 0.0
-
         if return_grad or return_bhhh:
             d_loglike[:] = 0.0
 
@@ -470,8 +471,8 @@ def _numba_utility_to_loglike(
 
             # d loglike
             for a in range(n_alts):
-                this_ch = array_ch[a] #FIXME ASR: comment the next two, update the equations
-                if this_ch == 0:
+                this_ch = array_ch[a] 
+                if this_ch == 0: # Only runs for the chosen alternative, if choice == 0 then goes to next a
                     continue
                 total_probability_a = probability[a]
                 # if total_probability_a > 0:
@@ -480,14 +481,16 @@ def _numba_utility_to_loglike(
                 #         bhhh += np.outer(tempvalue,tempvalue) * this_ch * array_wt[0]
                 #     d_loglike += tempvalue * array_wt[0]
                 #
-                if total_probability_a > 0:
-                    if total_probability_a < 1e-250:
-                        total_probability_a = 1e-250
-                    tempvalue = d_probability[a, :] * (this_ch / total_probability_a)
-                    dLL_temp = tempvalue / this_ch
-                    d_loglike += tempvalue * array_wt[0]
-                    if return_bhhh:
-                        bhhh += np.outer(dLL_temp, dLL_temp) * this_ch * array_wt[0]
+                # if total_probability_a > 0:
+                #     if total_probability_a < 1e-250:
+                #         total_probability_a = 1e-250
+                
+                # print(f"d_prob = {d_probability[a, :]}; distances = {distances[a]}")
+                tempvalue = -1 * (d_probability[a, :] * distances[a] ** 2.0) #NOTE: changed -1 to 1 11/3/25
+                # dLL_temp = tempvalue / this_ch
+                d_loglike += tempvalue * array_wt[0]
+                    # if return_bhhh:
+                    #     bhhh += np.outer(dLL_temp, dLL_temp) * this_ch * array_wt[0]
 
 
 _master_shape_signature = (
@@ -495,12 +498,12 @@ _master_shape_signature = (
     "(uca),(uca),(uca), "
     "(uco),(uco),(uco),(uco), "
     "(edges,four), "
-    "(nests),(nests),(nests), "
+    "(nests, three), "
     "(params),(params), "
     "(nodes),(nodes),(),(vco),(alts,vca), "
     "(ces,vce),(ces),(two),  "
-    "(four)->"
-    "(nodes),(nodes),(nodes),(params,params),(params),(alts)"
+    "(four),(alts)->"
+    "(nodes),(nodes),(nodes),(params,params),(params),()" 
 )
 
 
@@ -517,33 +520,39 @@ def _numba_master(
     model_utility_co_param,  # [ 9] int input shape=[n_co_features]
     model_utility_co_data,  # [10] int input shape=[n_co_features]
     edgeslots,  # [11] int input shape=[edges, 4]
-    mu_slots,  # [12] int input shape=[nests]
-    start_slots,  # [13] int input shape=[nests]
-    len_slots,  # [14] int input shape=[nests]
-    holdfast_arr,  # [15] int8 input shape=[n_params]
-    parameter_arr,  # [16] float input shape=[n_params]
-    array_ch,  # [17] float input shape=[nodes]
-    array_av,  # [18] int8 input shape=[nodes]
-    array_wt,  # [19] float input shape=[]
-    array_co,  # [20] float input shape=[n_co_vars]
-    array_ca,  # [21] float input shape=[n_alts, n_ca_vars]
-    array_ce_data,  # [22] float input shape=[n_casealts, n_ca_vars]
-    array_ce_indices,  # [23] int input shape=[n_casealts]
-    array_ce_ptr,  # [24] int input shape=[2]
+    nest_slots, # [12] int input shape=[nests, 3]
+    # mu_slots,  # [x12] int input shape=[nests]
+    # start_slots,  # [x13] int input shape=[nests]
+    # len_slots,  # [x14] int input shape=[nests]
+    holdfast_arr,  # [13] int8 input shape=[n_params]
+    parameter_arr,  # [14] float input shape=[n_params]
+    array_ch,  # [15] float input shape=[nodes]
+    array_av,  # [16] int8 input shape=[nodes]
+    array_wt,  # [17] float input shape=[]
+    array_co,  # [18] float input shape=[n_co_vars]
+    array_ca,  # [19] float input shape=[n_alts, n_ca_vars]
+    array_ce_data,  # [20] float input shape=[n_casealts, n_ca_vars]
+    array_ce_indices,  # [21] int input shape=[n_casealts]
+    array_ce_ptr,  # [22] int input shape=[2]
     return_flags,
-    # only_utility,        # [19] int8 input
-    # return_probability,  # [20] bool input
-    # return_grad,         # [21] bool input
-    # return_bhhh,         # [22] bool input
-    utility,  # [23] float output shape=[nodes]
-    logprob,  # [24] float output shape=[nodes]
-    probability,  # [25] float output shape=[nodes]
-    bhhh,  # [26] float output shape=[n_params, n_params]
-    d_loglike,  # [27] float output shape=[n_params]
-    loglike,  # [28] float output shape=[]
-    distances, # [29?] float input shape=[n_alts]
+    # only_utility,        # [23] int8 input
+    # return_probability,  # [23] bool input
+    # return_grad,         # [23] bool input
+    # return_bhhh,         # [23] bool input
+    distances, # [24] float input shape=[n_alts]
+    utility,  # [25] float output shape=[nodes]
+    logprob,  # [26] float output shape=[nodes]
+    probability,  # [27] float output shape=[nodes]
+    bhhh,  # [28] float output shape=[n_params, n_params]
+    d_loglike,  # [29] float output shape=[n_params]
+    loglike,  # [30] float output shape=[]
+    
 ):
     n_alts = array_ca.shape[0]
+    # unpack combined nest slots
+    mu_slots     = nest_slots[:, 0]
+    start_slots  = nest_slots[:, 1]
+    len_slots    = nest_slots[:, 2]
 
     # assert edgeslots.shape[1] == 4
     # upslots   = edgeslots[:,0]  # int input shape=[edges]
@@ -615,6 +624,7 @@ def _numba_master(
     _numba_utility_to_loglike(
         n_alts,
         edgeslots,  # int input shape=[edges, 4]
+        # nest_slots,
         mu_slots,  # int input shape=[nests]
         start_slots,  # int input shape=[nests]
         len_slots,  # int input shape=[nests]
@@ -625,18 +635,19 @@ def _numba_master(
         array_wt,  # float input shape=[]
         return_flags,
         dutility,
+        distances, #float input shape=[alts]
         utility,  # float output shape=[nodes]
         logprob,  # float output shape=[nodes]
         probability,  # float output shape=[nodes]
         bhhh,  # float output shape=[n_params, n_params]
         d_loglike,  # float output shape=[n_params]
         loglike,  # float output shape=[]
-        distances, #float input shape=[alts]
+        
     )
 
 
 _numba_master_vectorized = guvectorize(
-    _type_signatures("fiii fii ifii I iii bf fbffF Fij b fffFfff"),
+    _type_signatures("fiii fii ifii I I bf fbffF Fij bf fffFff"),
     _master_shape_signature,
     nopython=True,
     fastmath=True,
@@ -1243,11 +1254,42 @@ class NumbaModel(_BaseModel):
                 raise MissingDataError("model.dataset does not include `ch`")
         if self.work_arrays is None:
             self._rebuild_work_arrays(on_missing_data="raise")
+        # return (
+        #     *self._fixed_arrays,
+        #     self.pholdfast,
+        #     self.pvals.astype(self.float_dtype),  # float input shape=[n_params]
+        #     *self._data_arrays.cs[caseslice],  # TODO fix when not using named tuple
+        # )
+        fa = self._fixed_arrays
+        nest_slots = np.stack((fa.mu_slot, fa.start_edges, fa.len_edges), axis=1)
+        da = self._data_arrays  # use named fields explicitly
+        # Slice the per-case inputs explicitly and in expected order:
+        array_ch = da.ch[caseslice]
+        array_av = da.av[caseslice]
+        array_wt = da.wt[caseslice]
+        array_co = da.co[caseslice]          # ok if (cases, 0)
+        array_ca = da.ca[caseslice]          # (cases, alts, vca)
+        array_ce_data     = da.ce_data       # (ces, vce) or (cases, ces, vce)
+        array_ce_indices = getattr(da, "ce_indices", getattr(da, "ce_index", None))
+        array_ce_ptr     = getattr(da, "ce_ptr", getattr(da, "ce_indptr", None))
+        # array_ce_indices  = da.ce_indices    # (ces,)
+        # array_ce_ptr      = da.ce_ptr        # (2,)
+        if array_ce_indices is None:
+            array_ce_indices = np.zeros((0,), dtype=np.int32)
+        if array_ce_ptr is None:
+            array_ce_ptr = np.zeros((2,), dtype=np.int32)
         return (
-            *self._fixed_arrays,
+            # fixed arrays (same order as in _master_shape_signature)
+            fa.qca_scale, fa.qca_param_slot, fa.qca_data_slot, fa.qscale_param_slot,
+            fa.uca_scale, fa.uca_param_slot, fa.uca_data_slot,
+            fa.uco_alt_slot, fa.uco_scale, fa.uco_param_slot, fa.uco_data_slot,
+            fa.edge_slots,
+            nest_slots,
             self.pholdfast,
-            self.pvals.astype(self.float_dtype),  # float input shape=[n_params]
-            *self._data_arrays.cs[caseslice],  # TODO fix when not using named tuple
+            self.pvals.astype(self.float_dtype),
+            # data arrays in explicit order
+            array_ch, array_av, array_wt, array_co, array_ca,
+            array_ce_data, array_ce_indices, array_ce_ptr,
         )
 
     def constraint_violation(
@@ -1345,15 +1387,8 @@ class NumbaModel(_BaseModel):
             allow_missing_ch=False,
         )
         args_flags = args + (
-            np.asarray(
-                [
-                    0,  # only_utility
-                    False,  # return_probability
-                    True,  # return_gradient
-                    True,  # return_bhhh
-                ],
-                dtype=np.int8,
-            ),
+            np.asarray([0, False, True, True], dtype=np.int8),
+            np.asarray(self.data['dist_to_ch']).astype(self.float_dtype),  # shape (alts,)
         )
         with np.errstate(
             divide="ignore",
@@ -1384,7 +1419,7 @@ class NumbaModel(_BaseModel):
         x=None,
         only_utility=0,
         return_gradient=False,
-        return_probability=False,
+        return_probability=True,
         return_bhhh=False,
         start_case=None,
         stop_case=None,
@@ -1397,16 +1432,10 @@ class NumbaModel(_BaseModel):
             caseslice=caseslice,
         )
         args_flags = args + (
-            np.asarray(
-                [
-                    only_utility,
-                    return_probability,
-                    return_gradient,
-                    return_bhhh,
-                ],
-                dtype=np.int8,
-            ) + self.data['dist_to_ch'],
+            np.asarray([0, False, True, True], dtype=np.int8),
+            np.asarray(self.data['dist_to_ch'][caseslice, :]).astype(self.float_dtype),  # shape (alts,)
         )
+        
         try:
             with np.errstate(
                 divide="ignore",
@@ -2130,6 +2159,7 @@ class NumbaModel(_BaseModel):
             step_case=step_case,
             check_if_best=check_if_best,
         )
+        # print(f'LL = {-result / self.total_weight()}')
         return -result / self.total_weight()
 
     def neg_d_loglike(self, x=None, start_case=0, stop_case=-1, step_case=1, **kwargs):
@@ -2789,7 +2819,7 @@ class NumbaModel(_BaseModel):
         )
         result = pd.concat(df, keys=["co", "ca"], names=["utility_type"])
         result["partial_utility"] = result["data_value"] * result["parameter_value"]
-        return result.set_index(["utility_type", "parameter_name", "data_expr"])
+        return result.set_index(["parameter_name", "data_expr"])
 
     def release_memory(self):
         """Release memory-intensive data structures."""

@@ -148,6 +148,7 @@ def maximize_loglike(
         if maxiter is not None:
             options["maxiter"] = maxiter
 
+        options['disp'] = True #added ASR for debugging NOTE
         timer = Timer()
 
         if not quiet and not _doctest_mode_:
@@ -360,6 +361,7 @@ def maximize_loglike(
                     constraints=constraints,
                     **kwargs,
                 )
+                print(raw_result)
             except Exception:
                 dashboard.update(
                     f"Iteration {iteration_number:03} [Exception] {iteration_number_tail}",
