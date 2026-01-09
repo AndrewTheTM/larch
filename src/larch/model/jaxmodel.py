@@ -105,6 +105,10 @@ class Model(NumbaModel, OptimizeMixin, PanelMixin):
         self.common_draws = False
 
     @property
+    def set_distances(self, distance_array):
+        self.distances = distance_array
+
+    @property
     def compute_engine(self):
         engine = self._compute_engine
         if engine is None:
@@ -867,10 +871,18 @@ class Model(NumbaModel, OptimizeMixin, PanelMixin):
     def _jax_loglike_casewise(self, params, databundle, groupbundle=None, n_draws=100):
         if len(self.mixtures) == 0:
             logpr = self._jax_log_probability(params, databundle)
+            pr = self._jax_probability(params, databundle)
             ch = databundle.get("ch", None)
             n_alts = self.dataset.dc.n_alts
+            
             # return (logpr[:n_alts] * ch[:n_alts]).sum()
-            return jnp.where(ch[:n_alts], logpr[:n_alts] * ch[:n_alts], 0).sum()
+            # return jnp.where(ch[:n_alts], logpr[:n_alts] * ch[:n_alts], 0).sum()
+            # jax.debug.print(f"{databundle.keys()}")
+            # jax.debug.print(f"{vars(self).keys()}")
+            # jax.debug.print(f"da\n{self._data_arrays}")
+            jax.debug.print(f"{self._dataset['ca'][0]}")
+            # jax.debug.print(f"{self._datatree}")
+            return (pr[:n_alts] * (ch[:n_alts] ** 2.0)).sum() #dist_to_ch
         else:
             if self.prerolled_draws:
                 draws = groupbundle.get("draws", None)
@@ -878,6 +890,7 @@ class Model(NumbaModel, OptimizeMixin, PanelMixin):
                 rk = groupbundle.get("rk", None)
                 draws, _ = self._make_random_draws_out(n_draws, len(self.mixtures), rk)
             ch = databundle.get("ch", None)
+            jax.debug.print(f"{databundle.keys()}")
             rand_params = self.apply_random_draws(params, draws)
             if ch.ndim == 2:  # PANEL DATA
                 # vmap over ingroup

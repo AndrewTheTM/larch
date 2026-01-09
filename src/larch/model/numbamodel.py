@@ -257,6 +257,7 @@ def _numba_utility_to_loglike(
     array_ch,  # float input shape=[nodes]
     array_av,  # int8 input shape=[nodes]
     array_wt,  # float input shape=[]
+    array_ca, # float input shape=[n_alts, n_ca_vars]
     return_flags,  #
     dutility,  #
     distances, # float input shape=[alts]
@@ -470,11 +471,13 @@ def _numba_utility_to_loglike(
                 bhhh[:] = 0.0
 
             # d loglike
+            # x_bar = array_ca * np.transpose(probability)
             for a in range(n_alts):
                 this_ch = array_ch[a] 
-                if this_ch == 0: # Only runs for the chosen alternative, if choice == 0 then goes to next a
-                    continue
+                # if this_ch == 0: # Only runs for the chosen alternative, if choice == 0 then goes to next a
+                #     continue
                 total_probability_a = probability[a]
+
                 # if total_probability_a > 0:
                 #     tempvalue = d_probability[a, :] / total_probability_a
                 #     if return_bhhh:
@@ -486,9 +489,34 @@ def _numba_utility_to_loglike(
                 #         total_probability_a = 1e-250
                 
                 # print(f"d_prob = {d_probability[a, :]}; distances = {distances[a]}")
-                tempvalue = -1 * (d_probability[a, :] * distances[a] ** 2.0) #NOTE: changed -1 to 1 11/3/25
+                # tempvalue = d_probability[a, :] * (this_ch / total_probability_a) # <~~ Original Code
+
+
+                # I blame ChatGPT if this is wrong...
+                # array_ca = [n_alts, n_ca_vars]
+                
+
+                tempvalue = -1 * total_probability_a * (distances[a] ** 2.0) #* (parameter_arr - x_bar.sum(1)).sum() 
                 # dLL_temp = tempvalue / this_ch
+                
                 d_loglike += tempvalue * array_wt[0]
+
+                # x_bar = array_ca[a] * probability[a] # This works... I think ... x_bar = [n_params]
+                # d_loglike += x_bar
+            #     x_x_bar = np.zeros_like(x_bar)
+            #     for p in range(parameter_arr.size):
+            #         x_x_bar[p] += parameter_arr[p] - x_bar[p]
+            # for a in range(n_alts):
+            #     this_ch = array_ch[a] 
+            #     # if this_ch == 1:    
+            #     d_loglike += probability[a] * (distances[a] ** 2.0) * x_x_bar
+
+            
+                
+
+                # tempvalue = probability[a] * (distances[a] ** 2.0) * x_x_bar
+                # x_bar = probability[a]
+                # d_loglike += tempvalue
                     # if return_bhhh:
                     #     bhhh += np.outer(dLL_temp, dLL_temp) * this_ch * array_wt[0]
 
@@ -633,6 +661,7 @@ def _numba_master(
         array_ch,  # float input shape=[nodes]
         array_av,  # int8 input shape=[nodes]
         array_wt,  # float input shape=[]
+        array_ca, #float input shape=[n_alts, n_ca_vars]
         return_flags,
         dutility,
         distances, #float input shape=[alts]
